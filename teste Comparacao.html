@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Comparador de Avaliações Físicas</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        @media print {
+            table,
+            canvas {
+                margin-top: 30px;
+                max-width: 100%;
+                height: auto !important;
+            }
+            h2 {
+                page-break-before: always;
+            }
+            body {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        
+        table,
+        th,
+        td {
+            border: 1px solid black;
+            border-collapse: collapse;
+            padding: 6px;
+            text-align: center;
+        }
+        
+        th {
+            background-color: #f2f2f2;
+        }
+        
+        canvas {
+            margin-top: 30px;
+            max-width: 100%;
+        }
+        
+        button {
+            margin-top: 20px;
+            padding: 10px 15px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Comparador de Avaliações Físicas</h1>
+    <p>Selecione até 4 arquivos PDF:</p>
+    <input type="file" id="pdfInput" accept="application/pdf" multiple><br><br>
+
+    <div id="pdfArea">
+        <div id="outputTable"></div>
+        <div style="width: 100%; overflow-x: auto;">
+            <div style="page-break-before: always;"></div>
+            <canvas id="grafico" width="600" height="300"></canvas>
+        </div>
+    </div>
+
+    <button onclick="exportarPDF()">📄 Exportar para PDF</button>
+
+    <script>
+        const pdfjsLib = window['pdfjs-dist/build/pdf'];
+        let resultados = [];
+
+        async function extractTextFromPDF(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({
+                data: arrayBuffer
+            }).promise;
+            const page = await pdf.getPage(1);
+            const textContent = await page.getTextContent();
+            return textContent.items.map(item => item.str).join(' ');
+        }
+
+        function parseData(text) {
+            const get = (label) => {
+                const match = text.match(new RegExp(label + '\\s+(\\d{1,3}[\\,\\.]?\\d*)'));
+                return match ? parseFloat(match[1].replace(',', '.')) : null;
+            };
+
+            const dataStr = (text.match(/Data:\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/) || [])[1];
+            const dataISO = dataStr ? dataStr.split('/').reverse().join('-') : null;
+            let nome = '';
+            const matchNome = text.match(/Nome:\s+([A-Za-zÀ-ÿ\s]+?)\s+Sexo:/);
+            if (matchNome && matchNome[1]) {
+                nome = matchNome[1].trim();
+            }
+
+
+            return {
+                nome,
+                dataOriginal: dataStr,
+                dataISO,
+                peso: get('Peso Atual:'),
+                gordura: get('%Gordura'),
+                musculo: get('M\\. Muscular'),
+                gorduraKg: get('Massa Gorda'),
+                dobras: {
+                    Tricipital: get('Tricipital'),
+                    Subescapular: get('SubEscapular'),
+                    SupraIlíaca: get('SupraIlica'),
+                    Abdominal: get('Abdominal'),
+                    Coxa: getNthMatch(text, 'Coxa', 1), // ✅ primeira ocorrência de Coxa
+                    Peitoral: getNthMatch(text, 'Peitoral', 2), // ✅ segunda ocorrência de Peitoral
+                    Panturrilha: getNthMatch(text, 'Panturrilha', 1), // ✅ primeira ocorrência de Panturrilha
+                },
+                circunferencias: {
+                    Torax: get('Toráx'),
+                    Peitoral: getNthMatch(text, 'Peitoral', 1), // ✅ primeira ocorrência de Peitoral
+                    Cintura: get('Cintura'),
+                    Abdomen: get('Abdomen'),
+                    Gluteo: get('Gluteo'),
+                    BracoD: get('Braço Direito'),
+                    BracoE: get('Braco Esquerdo'),
+                    CoxaD: get('Coxa Direita'),
+                    CoxaE: get('Coxa Esquerda'),
+                    PantD: get('Panturrilha D'),
+                    PantE: get('Panturrilha E'),
+                }
+            };
+        }
+
+        function getNthMatch(text, word, n) {
+            const regex = new RegExp(`${word}\\s+(\\d{1,3}[,\\.]?\\d*)`, 'gi');
+            let match;
+            let count = 0;
+            while ((match = regex.exec(text)) !== null) {
+                count++;
+                if (count === n) {
+                    return parseFloat(match[1].replace(',', '.'));
+                }
+            }
+            return null;
+        }
+
+        document.getElementById('pdfInput').addEventListener('change', async function(e) {
+            const files = [...e.target.files].slice(0, 4);
+            resultados = [];
+
+            for (const file of files) {
+                const text = await extractTextFromPDF(file);
+                // console.log(`TEXT FOR FILE ${file.name}:\n`, text);
+                const dados = parseData(text);
+                resultados.push(dados);
+            }
+
+            resultados.sort((a, b) => a.dataISO.localeCompare(b.dataISO));
+            gerarTabela(resultados);
+            gerarGrafico(resultados);
+        });
+
+        function comparar(valAtual, valAnterior) {
+            if (valAtual != null && valAnterior != null) {
+                const dif = (valAtual - valAnterior).toFixed(1);
+                if (dif > 0) return `🔺 +${dif}`;
+                if (dif < 0) return `🔻 ${dif}`;
+                return '➖ 0.0';
+            }
+            return '-';
+        }
+
+        function gerarTabela(resultados) {
+            let html = '<h2>Resumo</h2><table><tr><th>Data</th><th>Peso</th><th>% Gordura</th><th>M. Muscular</th><th>Massa Gorda</th></tr>';
+            resultados.forEach((r, i) => {
+                const a = resultados[i - 1];
+                html += `<tr>
+          <td>${r.dataOriginal || '-'}</td>
+          <td>${r.peso ?? '-'} ${i > 0 ? comparar(r.peso, a.peso) : ''}</td>
+          <td>${r.gordura ?? '-'} ${i > 0 ? comparar(r.gordura, a.gordura) : ''}</td>
+          <td>${r.musculo ?? '-'} ${i > 0 ? comparar(r.musculo, a.musculo) : ''}</td>
+          <td>${r.gorduraKg ?? '-'} ${i > 0 ? comparar(r.gorduraKg, a.gorduraKg) : ''}</td>
+        </tr>`;
+            });
+            html += '</table>';
+
+            const categorias = ['Tricipital', 'Subescapular', 'SupraIlíaca', 'Abdominal', 'Coxa', 'Peitoral', 'Panturrilha'];
+            html += '<h2>Dobras Cutâneas</h2><table><tr><th>Data</th>' + categorias.map(c => `<th>${c}</th>`).join('') + '</tr>';
+            resultados.forEach((r, i) => {
+                const a = resultados[i - 1];
+                html += `<tr><td>${r.dataOriginal}</td>` + categorias.map(c => {
+                    const atual = parseFloat(r.dobras[c]);
+                    const anterior = a ? parseFloat(a.dobras[c]) : null;
+                    return `<td>${isNaN(atual) ? '-' : atual} ${i > 0 ? comparar(atual, anterior) : ''}</td>`;
+                }).join('') + '</tr>';
+            });
+            html += '</table>';
+
+            const circ = ['Torax', 'Peitoral', 'Cintura', 'Abdomen', 'Gluteo', 'BracoD', 'BracoE', 'CoxaD', 'CoxaE', 'PantD', 'PantE'];
+            html += '<h2>Circunferências (cm)</h2><table><tr><th>Data</th>' + circ.map(c => `<th>${c}</th>`).join('') + '</tr>';
+            resultados.forEach((r, i) => {
+                const a = resultados[i - 1];
+                html += `<tr><td>${r.dataOriginal}</td>` + circ.map(c => {
+                    const atual = parseFloat(r.circunferencias[c]);
+                    const anterior = a ? parseFloat(a.circunferencias[c]) : null;
+                    return `<td>${isNaN(atual) ? '-' : atual} ${i > 0 ? comparar(atual, anterior) : ''}</td>`;
+                }).join('') + '</tr>';
+            });
+            html += '</table>';
+
+            document.getElementById('outputTable').innerHTML = html;
+        }
+
+        function gerarGrafico(resultados) {
+            const labels = resultados.map(r => r.dataOriginal || '---');
+            const musculo = resultados.map(r => r.musculo || 0);
+            const gorduraKg = resultados.map(r => r.gorduraKg || 0);
+            const pesoTotal = resultados.map(r => r.peso || 0);
+
+            const ctx = document.getElementById('grafico').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Massa Muscular (kg)',
+                        data: musculo,
+                        backgroundColor: 'rgba(54, 162, 235, 0.7)',
+                        stack: 'stack1',
+                    }, {
+                        label: 'Massa Gorda (kg)',
+                        data: gorduraKg,
+                        backgroundColor: 'rgba(255, 99, 132, 0.7)',
+                        stack: 'stack1',
+                    }, {
+                        type: 'line',
+                        label: 'Peso Total (kg)',
+                        data: pesoTotal,
+                        borderColor: 'rgba(0, 0, 0, 0.8)',
+                        borderWidth: 2,
+                        pointBackgroundColor: 'black',
+                        tension: 0.3,
+                        yAxisID: 'y',
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            stacked: true
+                        },
+                        y: {
+                            stacked: true,
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Kg'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top'
+                        }
+                    }
+                }
+            });
+        }
+
+        function exportarPDF() {
+            const area = document.getElementById('pdfArea');
+            // const area = document.getElementById('pdfWrapper');
+
+            const nomePaciente = resultados[0] && resultados[0].nome.toLowerCase().replace(/\s+/g, '-') || 'avaliacao';
+            const dataHoje = new Date().toISOString().split('T')[0];
+
+
+            const opt = {
+                margin: [0.5, 0.5, 0.5, 0.5], // top, left, bottom, right (em polegadas)
+                filename: `avaliacao_${nomePaciente}_${dataHoje}.pdf`,
+                image: {
+                    type: 'jpeg',
+                    quality: 0.98
+                },
+                html2canvas: {
+                    scale: 2,
+                    scrollY: 0,
+                    useCORS: true,
+                    windowWidth: 1024
+                },
+                jsPDF: {
+                    unit: 'in',
+                    format: 'a4',
+                    orientation: 'portrait'
+                },
+                pagebreak: {
+                    mode: ['avoid-all', 'css', 'legacy']
+                }
+            };
+
+            html2pdf().set(opt).from(area).save();
+        }
+    </script>
+</body>
+
+</html>
